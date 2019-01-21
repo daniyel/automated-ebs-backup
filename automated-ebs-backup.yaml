@@ -1,0 +1,176 @@
+Description: >
+  This template deploys an automated volume backup.
+
+Parameters:
+
+  FunctionName:
+    Description: Name of the lambda function.
+    Type: String
+    Default: 'automated-ebs-backup'
+
+  S3BucketLambda:
+    Description: Name of the S3 bucket, where lambda function is located.
+    Type: String
+    Default: 'automated-ebs-backup'
+
+  VolumeNamePrefix:
+    Description: >
+      Prefix or list of prefixes that will be used to filter volumes. Default is all (*). Example of comma separated list - foo,bar,example
+    Type: String
+    Default: '*'
+
+  RetentionInDays:
+    Description: Retention in days for snapshots before they are deleted.
+    Type: String
+    Default: 10
+
+  ScheduleExpression:
+    Description: Expression used for running the lambda function. Default is daily at 2:35am UTC.
+    Type: String
+    Default: 'cron(35 2 * * ? *)'
+
+Conditions:
+
+  GovCloudCondition:
+    Fn::Equals:
+      - Ref: AWS::Region
+      - us-gov-west-1
+
+
+Resources:
+
+  EBSSnapshotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      RoleName: EBSSnapshotRole
+
+  EBSSnapshotPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: EBSSnapshotPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Action:
+              - 'logs:*'
+            Resource: 'arn:aws:logs:*:*:*'
+          - Effect: 'Allow'
+            Action:
+              - 'ec2:Describe*'
+            Resource: '*'
+          - Effect: 'Allow'
+            Action:
+              - 'ec2:CreateSnapshot'
+              - 'ec2:DeleteSnapshot'
+              - 'ec2:CreateTags'
+              - 'ec2:ModifySnapshotAttribute'
+              - 'ec2:ResetSnapshotAttribute'
+            Resource: '*'
+          - Effect: 'Allow'
+            Action:
+              - 's3:ListBucket'
+            Resource:
+              Fn::Sub:
+                - arn:${Partition}:s3:::${S3BucketLambda}
+                - Partition:
+                    Fn::If:
+                      - GovCloudCondition
+                      - aws-us-gov
+                      - aws
+
+          - Effect: 'Allow'
+            Action:
+              - 's3:GetObject'
+            Resource:
+              Fn::Sub:
+                - arn:${Partition}:s3:::${S3BucketLambda}/*
+                - Partition:
+                    Fn::If:
+                      - GovCloudCondition
+                      - aws-us-gov
+                      - aws
+          - Effect: 'Allow'
+            Action:
+              - 'xray:PutTraceSegments'
+              - 'xray:PutTelemetryRecords'
+              - 'xray:GetSamplingRules'
+              - 'xray:GetSamplingTargets'
+              - 'xray:GetSamplingStatisticSummaries'
+            Resource: '*'
+      Roles:
+        - Ref: EBSSnapshotRole
+
+  ScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Schedule event that triggers lambda.
+      ScheduleExpression:
+        Ref: ScheduleExpression
+      Targets:
+        - Arn:
+            Fn::GetAtt: EBSBackupLambda.Arn
+          Id:
+            Ref: EBSBackupLambda
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    DependsOn: EBSBackupLambda
+    Properties:
+      FunctionName:
+        Ref: EBSBackupLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn:
+        Fn::GetAtt: ScheduleRule.Arn
+
+  EBSBackupLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn: EBSBackupLambda
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - ''
+          - - '/aws/lambda/'
+            - Ref: EBSBackupLambda
+      RetentionInDays: 30
+
+  EBSBackupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName:
+        Ref: FunctionName
+      Description: Lambda function for automated ebs backups.
+      Environment:
+        Variables:
+          REGION:
+            Fn::Sub: '${AWS::Region}'
+          ACCOUNT_ID:
+            Fn::Sub: '${AWS::AccountId}'
+          VOL_NAME_PREFIXES:
+            Ref: VolumeNamePrefix
+          RETENTION_IN_DAYS:
+            Ref: RetentionInDays
+      Handler: 'automated_backup_handler.lambda_handler'
+      Role:
+        Fn::GetAtt: EBSSnapshotRole.Arn
+      Code:
+        S3Bucket:
+          Ref: S3BucketLambda
+        S3Key: 'automated_backup_handler.zip'
+      Runtime: 'python3.6'
+      Timeout: 25
+      MemorySize: 128
+      TracingConfig:
+        Mode: Active
