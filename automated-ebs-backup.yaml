@@ -52,7 +52,8 @@ Resources:
             Action:
               - 'sts:AssumeRole'
       Path: '/'
-      RoleName: EBSSnapshotRole
+      RoleName:
+        Fn::Sub: 'EBSSnapshotRole-${AWS::StackName}'
 
   EBSSnapshotPolicy:
     Type: AWS::IAM::Policy
