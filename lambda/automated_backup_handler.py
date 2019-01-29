@@ -55,7 +55,20 @@ def lambda_handler(event, context):
 
         # Add volume name to snapshot for easier identification
         print(f'Tagging {volume["VolumeId"]} with {volume_name}.')
-        snapshot_id.create_tags(Tags=[{'Key': 'Name', 'Value': volume_name}])
+        snapshot_id.create_tags(Tags=[
+            {
+                'Key': 'Name',
+                'Value': volume_name
+            },
+            {
+                'Key': 'Owner',
+                'Value': 'DbAdmin'
+            },
+            {
+                'Key': 'Tag',
+                'Value': volume_tag
+            }
+        ])
 
     snapshots = ec2.describe_snapshots(Filters=filters, OwnerIds=[account_id])
 
